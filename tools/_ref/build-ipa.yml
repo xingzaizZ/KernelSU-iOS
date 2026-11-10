@@ -1,0 +1,217 @@
+# GitHub Actions：自动构建未签名 IPA
+#
+# 用法：
+#   1. 把整个目录推到自己的 GitHub 仓库（main 分支）
+#   2. Actions 会自动跑；也可在 Actions 页面手动 Run workflow
+#   3. 构建完成后在本次 run 的 Artifacts 里下载 MicBoost-unsigned.ipa
+#
+# 未签名 IPA 的后续处理（二选一，都在你本机做）：
+#   a) 用 AltStore / SideStore / Sideloadly 自签安装
+#   b) 用 iOS App Signer + 自己的开发者证书重签后安装
+#
+# 如果要直接产出已签名 IPA，取消 workflow_dispatch 下面三个 secret 的注释，
+# 并把签名步骤打开（需要 p12 证书 + mobileprovision 描述文件）。
+
+name: Build IPA
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: "构建配置"
+        required: false
+        default: "Release"
+        type: choice
+        options: [ Debug, Release ]
+
+env:
+  SCHEME: MicBoost
+  PROJECT: MicBoost.xcodeproj
+  CONFIGURATION: ${{ github.event.inputs.configuration || 'Release' }}
+
+jobs:
+  test-core:
+    name: 单元测试（MicBoostCore）
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 选择 Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+
+      - name: 编译算法层（iOS SDK）
+        run: |
+          set -o pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          TRIPLE=$(xcrun --sdk iphoneos --show-sdk-platform-path > /dev/null 2>&1; echo "arm64-apple-ios16.0")
+          swift build \
+            --package-path . \
+            --target MicBoostCore \
+            --sdk "$SDK" \
+            --triple "$TRIPLE" 2>&1 | tail -n 80
+
+      - name: 运行 Swift Package 测试（macOS 平台内核验证）
+        run: |
+          set -o pipefail
+          swift test --package-path . 2>&1 | tail -n 100
+        continue-on-error: true
+
+  build-ipa:
+    name: 构建未签名 IPA
+    runs-on: macos-15
+    needs: [ test-core ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 选择 Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+
+      - name: 显示版本信息
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: 归档（不签名）
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/MicBoost.xcarchive \
+            -derivedDataPath build/DD \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            ONLY_ACTIVE_ARCH=NO \
+            ARCHS="arm64" 2>&1 | tee /tmp/archive.log
+
+      - name: 归档失败时打印诊断
+        if: failure()
+        run: |
+          echo "===== 最后 200 行 ====="
+          tail -n 200 /tmp/archive.log || true
+          echo "===== scheme 列表 ====="
+          xcodebuild -list -project "$PROJECT" || true
+
+      - name: 打包成 IPA
+        run: |
+          set -e
+          APP_PATH="build/MicBoost.xcarchive/Products/Applications/MicBoost.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "找不到 .app，尝试其他路径"
+            find build -name "*.app" -maxdepth 6
+            APP_PATH=$(find build -name "*.app" -maxdepth 6 | head -n 1)
+          fi
+          echo "APP_PATH=$APP_PATH"
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R "$APP_PATH" build/Payload/
+          # 去掉可能残留的签名信息
+          rm -rf build/Payload/MicBoost.app/_CodeSignature || true
+          cd build
+          zip -qry MicBoost-unsigned.ipa Payload
+          ls -lh MicBoost-unsigned.ipa
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: MicBoost-unsigned-ipa
+          path: build/MicBoost-unsigned.ipa
+          retention-days: 30
+
+      - name: 上传 dSYM（便于崩溃分析）
+        uses: actions/upload-artifact@v4
+        with:
+          name: MicBoost-dSYM
+          path: build/MicBoost.xcarchive/dSYMs
+          retention-days: 30
+          if-no-files-found: ignore
+
+  build-signed:
+    name: 构建已签名 IPA（需要证书）
+    runs-on: macos-15
+    needs: [ test-core ]
+    if: ${{ vars.ENABLE_SIGNED_BUILD == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 选择 Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+
+      - name: 导入签名证书与描述文件
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/cert.p12
+          PP_PATH=$RUNNER_TEMP/pp.mobileprovision
+          KEYCHAIN=$RUNNER_TEMP/app-signing.keychain-db
+
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERT_PATH
+          echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o $PP_PATH
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN
+          security set-keychain-settings -lut 21600 $KEYCHAIN
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN
+          security import $CERT_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN
+          security list-keychain -d user -s $KEYCHAIN
+
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
+
+      - name: 归档并导出
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          BUNDLE_ID: ${{ vars.BUNDLE_ID }}
+          EXPORT_METHOD: ${{ vars.EXPORT_METHOD }}
+        run: |
+          cat > ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>${EXPORT_METHOD:-ad-hoc}</string>
+            <key>teamID</key>
+            <string>${TEAM_ID}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>stripSwiftSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/MicBoost.xcarchive \
+            -derivedDataPath build/DD \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+            CODE_SIGN_STYLE=Manual
+
+          xcodebuild -exportArchive \
+            -archivePath build/MicBoost.xcarchive \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath build/export
+
+      - name: 上传已签名 IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MicBoost-signed-ipa
+          path: build/export/*.ipa
+          retention-days: 14
