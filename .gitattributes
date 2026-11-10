@@ -1,0 +1,22 @@
+# 统一换行符，避免 Windows 上提交时被转成 CRLF 而破坏 CI 脚本
+* text=auto eol=lf
+
+# 工作流与 shell 脚本必须是 LF，否则 macOS runner 上的 bash 会解析失败
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.sh    text eol=lf
+
+# Swift / Python / Markdown 用 LF
+*.swift text eol=lf
+*.py    text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+
+# Windows 脚本保留 CRLF
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+
+# 二进制文件不做换行转换
+*.png   binary
+*.ipa   binary
+*.zip   binary

@@ -1,0 +1,49 @@
+﻿name: KernelSU-iOS
+options:
+  bundleIdPrefix: com.kernelsu.ios
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1024"
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    ENABLE_BITCODE: "NO"
+    SWIFT_OPTIMIZATION_LEVEL: "-O"
+    DEAD_CODE_STRIPPING: "YES"
+
+targets:
+  KernelSU:
+    type: application
+    platform: iOS
+    sources:
+      - path: KernelSU
+        excludes:
+          - "Info.plist"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kernelsu.ios
+        PRODUCT_NAME: KernelSU
+        INFOPLIST_FILE: KernelSU/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: "NO"
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
+        SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: "NO"
+
+schemes:
+  KernelSU:
+    build:
+      targets:
+        KernelSU: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+    profile:
+      config: Release

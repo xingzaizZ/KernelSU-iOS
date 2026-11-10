@@ -1,0 +1,63 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# XcodeGen 产物（由 CI 生成，不入库）
+KernelSU-iOS.xcodeproj/
+project.pbxproj
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*~
+
+# 构建日志
+build.log
+*.log
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 本地签名相关（勿提交证书）
+*.p12
+*.mobileprovision
+*.cer
+*.certSigningRequest
+
+# 构建产物落地目录
+dist/
+
+# 上游图标的原始 XML 只作换算依据，不参与编译
+tools/_upstream/

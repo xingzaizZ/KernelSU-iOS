@@ -1,0 +1,169 @@
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: "构建配置"
+        required: false
+        default: "Release"
+        type: choice
+        options: [ Release, Debug ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build KernelSU iOS Shell
+    runs-on: macos-14
+    timeout-minutes: 40
+
+    env:
+      SCHEME: KernelSU
+      CONFIGURATION: ${{ github.event.inputs.configuration || 'Release' }}
+      BUNDLE_ID: com.kernelsu.ios
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          sw_vers
+
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen || brew upgrade xcodegen
+          xcodegen --version
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: List schemes
+        run: xcodebuild -list -project KernelSU-iOS.xcodeproj
+
+      - name: Build (no code signing)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project KernelSU-iOS.xcodeproj \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ENABLE_BITCODE=NO \
+            build 2>&1 | tee build.log | tail -n 150
+
+      - name: Locate .app
+        id: locate
+        run: |
+          APP_PATH=$(find build -maxdepth 6 -name "KernelSU.app" -type d | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::未找到 KernelSU.app，构建可能失败"
+            echo "--- build 目录树 ---"
+            find build -maxdepth 6 -name "*.app" -o -maxdepth 6 -name "*.xcent" | head -n 40
+            exit 1
+          fi
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+          echo "找到 app: $APP_PATH"
+          ls -la "$APP_PATH" | head -n 30
+
+      - name: Package into unsigned IPA
+        id: package
+        run: |
+          APP_PATH="${{ steps.locate.outputs.app_path }}"
+          STAGE=$(mktemp -d)
+          mkdir -p "$STAGE/Payload"
+          cp -R "$APP_PATH" "$STAGE/Payload/"
+          rm -rf "$STAGE/Payload/KernelSU.app/_CodeSignature" || true
+          rm -f  "$STAGE/Payload/KernelSU.app/embedded.mobileprovision" || true
+
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+                    "$APP_PATH/Info.plist" 2>/dev/null || echo "1.0.0")
+          BUILD_NO=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" \
+                    "$APP_PATH/Info.plist" 2>/dev/null || echo "0")
+          IPA_NAME="KernelSU-ios-${VERSION}-${BUILD_NO}-unsigned.ipa"
+
+          (cd "$STAGE" && zip -qr "$IPA_NAME" Payload -x "*.DS_Store")
+          mv "$STAGE/$IPA_NAME" ./"$IPA_NAME"
+
+          echo "ipa_name=$IPA_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          ls -lh "$IPA_NAME"
+          echo "--- Payload 结构 ---"
+          unzip -l "$IPA_NAME" | head -n 25
+
+      - name: Verify IPA is unsigned
+        run: |
+          IPA="${{ steps.package.outputs.ipa_name }}"
+          rm -rf verify && mkdir -p verify && cd verify
+          unzip -q "../$IPA"
+          if [ -d "Payload/KernelSU.app/_CodeSignature" ]; then
+            echo "::error::包内仍含 _CodeSignature"
+            exit 1
+          fi
+          echo "未签名校验通过：无 _CodeSignature"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" Payload/KernelSU.app/Info.plist
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KernelSU-ios-ipa
+          path: ${{ steps.package.outputs.ipa_name }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## KernelSU iOS Shell 构建结果"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 配置 | \`$CONFIGURATION\` |"
+            echo "| Bundle ID | \`$BUNDLE_ID\` |"
+            echo "| 产物 | \`${{ steps.package.outputs.ipa_name }}\` |"
+            echo "| 签名 | 未签名（需自签后安装） |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Attach IPA to release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: KernelSU-ios-ipa
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "*.ipa"
+          body: |
+            未签名 IPA，需自行使用证书签名后安装（TrollStore / AltStore / Sideloadly / 自签工具）。
+
+            本构建为界面展示外壳：不含模块加载器，不能刷入或启用任何模块；终端与授权状态均为本地演示数据。
