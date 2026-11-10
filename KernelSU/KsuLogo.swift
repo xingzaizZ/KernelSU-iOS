@@ -33,14 +33,18 @@ struct KsuLogo: View {
     private static let boxSize: CGFloat = 0.1875
     private static let bMin: CGFloat = 0.49125
 
+    /// 归一化坐标（0–1 空间）→ 画布像素偏移。
+    /// 放在静态方法里，因为 ViewBuilder 闭包内不允许声明函数。
+    private static func offset(_ normalized: CGFloat, scale k: CGFloat) -> CGFloat {
+        (normalized - minV) * k
+    }
+
     var body: some View {
         GeometryReader { geo in
             let s = min(geo.size.width, geo.size.height)
             let k = s / Self.span
             let ox = (geo.size.width - s) / 2
             let oy = (geo.size.height - s) / 2
-
-            func pos(_ v: CGFloat) -> CGFloat { (v - Self.minV) * k }
 
             ZStack(alignment: .topLeading) {
                 if let paper {
@@ -53,19 +57,28 @@ struct KsuLogo: View {
                 Rectangle()
                     .stroke(ink, lineWidth: Self.strokeW * k)
                     .frame(width: Self.frameSize * k, height: Self.frameSize * k)
-                    .offset(x: ox + pos(Self.frameMin), y: oy + pos(Self.frameMin))
+                    .offset(
+                        x: ox + Self.offset(Self.frameMin, scale: k),
+                        y: oy + Self.offset(Self.frameMin, scale: k)
+                    )
 
                 // 方块 A（左上）
                 Rectangle()
                     .fill(ink)
                     .frame(width: Self.boxSize * k, height: Self.boxSize * k)
-                    .offset(x: ox + pos(Self.aMin), y: oy + pos(Self.aMin))
+                    .offset(
+                        x: ox + Self.offset(Self.aMin, scale: k),
+                        y: oy + Self.offset(Self.aMin, scale: k)
+                    )
 
                 // 方块 B（右下），叠压在上
                 Rectangle()
                     .fill(ink)
                     .frame(width: Self.boxSize * k, height: Self.boxSize * k)
-                    .offset(x: ox + pos(Self.bMin), y: oy + pos(Self.bMin))
+                    .offset(
+                        x: ox + Self.offset(Self.bMin, scale: k),
+                        y: oy + Self.offset(Self.bMin, scale: k)
+                    )
             }
         }
         .aspectRatio(1, contentMode: .fit)
